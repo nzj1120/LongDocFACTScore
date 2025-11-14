@@ -2,21 +2,72 @@
 import warnings
 warnings.filterwarnings("ignore")
 
+from typing import List, Optional
+
 import torch
 import torch.nn as nn
 import traceback
-from transformers import BartTokenizer, BartForConditionalGeneration
+from transformers import AutoTokenizer, BartForConditionalGeneration
 import numpy as np
-from nltk import sent_tokenize
+import re
 from sentence_transformers import SentenceTransformer, util
 
+def _auto_select_device(requested_device: Optional[str]) -> str:
+    """Return a valid torch device string."""
+
+    if requested_device:
+        return requested_device
+    if torch.cuda.is_available():
+        return "cuda:0"
+    return "cpu"
+
+
+def _split_into_sentences(text: str) -> List[str]:
+    """Light-weight sentence splitter that supports both Chinese and English text."""
+
+    if not text:
+        return []
+
+    # Normalise whitespace so that regex splitting behaves well.
+    normalised = re.sub(r"\s+", " ", text.strip())
+    # Split on common Chinese and English sentence delimiters while keeping the delimiter
+    # attached to the sentence it terminates.
+    parts = re.split(r"(?<=[。！？!?])", normalised)
+    sentences: List[str] = []
+    buffer = ""
+    for part in parts:
+        if not part:
+            continue
+        buffer += part
+        if re.search(r"[。！？!?]$", part):
+            cleaned = buffer.strip()
+            if cleaned:
+                sentences.append(cleaned)
+            buffer = ""
+    if buffer.strip():
+        sentences.append(buffer.strip())
+    return sentences
+
+
 class LongDocFACTScore():
-    def __init__(self, device="cuda:0", model="BARTScore"):
-        self.sent_model = SentenceTransformer("bert-base-nli-mean-tokens")
-        self.sent_model.to(device)
-        self.device = device
+    def __init__(
+        self,
+        device: Optional[str] = None,
+        model: str = "BARTScore",
+        sent_model_name_or_path: str = "uer/sbert-base-chinese-nli",
+        bart_model_name_or_path: str = "fnlp/bart-large-chinese",
+        bart_tokenizer_name_or_path: Optional[str] = None,
+    ):
+        resolved_device = _auto_select_device(device)
+        self.sent_model = SentenceTransformer(sent_model_name_or_path)
+        self.sent_model.to(resolved_device)
+        self.device = resolved_device
         if model == "BARTScore":
-            self.metric = BARTScore(device=self.device)
+            self.metric = BARTScore(
+                device=self.device,
+                checkpoint=bart_model_name_or_path,
+                tokenizer_name_or_path=bart_tokenizer_name_or_path,
+            )
             self.metric_function = self.metric.bart_score
         else:
             raise ValueError("LongDocFACTScore currently only supports BARTScore")
@@ -42,16 +93,24 @@ class LongDocFACTScore():
         # src is a list containing source documents.
         # hyps is a list containing predicted documents
         for src, hyp in zip(srcs, hyps):
-            src_sents = sent_tokenize(src)
+            src_sents = _split_into_sentences(src)
+            if not src_sents:
+                raise ValueError(
+                    "The source document does not contain any detectable sentences."
+                )
             sentence_embeddings_src = self.sent_model.encode(
                 src_sents, show_progress_bar=False
             )
             doc_scores = []
-            hyp_array = sent_tokenize(hyp)
+            hyp_array = _split_into_sentences(hyp)
+            if not hyp_array:
+                raise ValueError(
+                    "The hypothesis document does not contain any detectable sentences."
+                )
             for idx, hyp_sentence in enumerate(hyp_array):
                 # for each sentence in summary, calculate the most similar sentence in the source article
                 sentence_embeddings_hyp = self.sent_model.encode(
-                    hyp_sentence, show_progress_bar=False
+                    [hyp_sentence], show_progress_bar=False
                 )
                 scores = util.cos_sim(sentence_embeddings_hyp, sentence_embeddings_src)[
                     0
@@ -79,11 +138,17 @@ class LongDocFACTScore():
 
 # code taken from https://github.com/neulab/BARTScore/blob/main/bart_score.py
 class BARTScore():
-    def __init__(self, device="cuda:0", checkpoint="facebook/bart-large"):
+    def __init__(
+        self,
+        device: str = "cuda:0",
+        checkpoint: str = "facebook/bart-large",
+        tokenizer_name_or_path: Optional[str] = None,
+    ):
         # Set up model
         self.device = device
         self.max_length = 1024
-        self.tokenizer = BartTokenizer.from_pretrained(checkpoint)
+        tokenizer_source = tokenizer_name_or_path or checkpoint
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, use_fast=False)
         self.model = BartForConditionalGeneration.from_pretrained(checkpoint)
         self.model.eval()
         self.model.to(device)
