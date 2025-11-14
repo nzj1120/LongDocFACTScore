@@ -12,6 +12,11 @@ import numpy as np
 import re
 from sentence_transformers import SentenceTransformer, util
 
+try:
+    from tqdm.auto import tqdm as _tqdm
+except ImportError:  # pragma: no cover - tqdm is optional
+    _tqdm = None
+
 def _auto_select_device(requested_device: Optional[str]) -> str:
     """Return a valid torch device string."""
 
@@ -88,11 +93,30 @@ class LongDocFACTScore():
             sectioned_sents.append(" ".join(sentence_array)[ii : ii + num_sent])
         return sectioned_sents
 
-    def score_src_hyp_long(self, srcs, hyps):
+    def score_src_hyp_long(self, srcs, hyps, *, progress: bool = False):
         all_scores = []
         # src is a list containing source documents.
         # hyps is a list containing predicted documents
-        for src, hyp in zip(srcs, hyps):
+        try:
+            src_len = len(srcs)
+            hyp_len = len(hyps)
+        except TypeError as exc:
+            raise TypeError(
+                "score_src_hyp_long expects sequence inputs with a definable length"
+            ) from exc
+
+        if src_len != hyp_len:
+            raise ValueError("Source and hypothesis lists must have the same length")
+
+        iterator = zip(srcs, hyps)
+        if progress:
+            if _tqdm is None:
+                raise RuntimeError(
+                    "tqdm is required when progress=True. Install it via 'pip install tqdm'."
+                )
+            iterator = _tqdm(iterator, total=src_len, desc="Scoring documents")
+
+        for src, hyp in iterator:
             src_sents = _split_into_sentences(src)
             if not src_sents:
                 raise ValueError(

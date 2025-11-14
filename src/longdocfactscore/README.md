@@ -12,6 +12,7 @@
    ```
 
    如果不能联网，请提前将 `nltk`、`numpy`、`sentence-transformers`、`torch`、`transformers`、`pandas` 等依赖包下载到本地后再离线安装。
+   若要在命令行中查看进度条，请同时准备 `tqdm` 包。
 
 ## 2. 准备本地模型
 
@@ -64,7 +65,30 @@ print(scores)
 - 两个列表长度必须一致，每个元素为一个字符串。
 - 文本可以包含中文或中英文混排，代码会自动按 `。！？` 等终止符号切分句子。
 
-## 5. 常见问题
+## 5. 使用 JSON 脚本批量打分
+
+如果您的原文与缩写分别存放在两个 JSON 文件中，并且章节名完全相同（例如
+`{"章节1": "原文1"}` 与 `{"章节1": "缩写1"}`），可以直接使用
+`score_json.py` 脚本批量打分：
+
+```bash
+python -m src.longdocfactscore.score_json 原文.json 缩写.json \
+  --sent-model models/chinese-sbert \
+  --bart-model models/bart-large-chinese \
+  --bart-tokenizer models/bart-large-chinese \
+  --output scores.json
+```
+
+- `--device`：可选，指定运行设备，例如 `cuda:0`。缺省时自动选择。
+- `--sent-model`：句向量模型目录或名称，默认 `uer/sbert-base-chinese-nli`。
+- `--bart-model`：BART 模型目录或名称，默认 `fnlp/bart-large-chinese`。
+- `--bart-tokenizer`：可选的分词器目录或名称，默认复用 BART 模型目录。
+- `--output`：可选，将打分结果保存到 JSON 文件，包含各章节得分与平均得分。
+- `--no-progress`：可选，添加该参数可关闭命令行进度条。
+
+脚本会显示评分进度、逐个章节的得分，并在最后打印所有章节平均得分、原文平均字数以及缩写平均字数。输出到 JSON 的文件也会包含这些汇总信息。
+
+## 6. 常见问题
 
 1. **报错提示无法切分句子**：请确认输入文本非空，并包含中文或英文句号/叹号/问号等句子终止符。
 2. **显存不足**：可将 `bart_score` 调用时的 `batch_size` 降低（默认为 4，可手动修改源代码或在调用前设置）。
